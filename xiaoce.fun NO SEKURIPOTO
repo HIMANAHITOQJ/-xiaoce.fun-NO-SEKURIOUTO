@@ -1,0 +1,130 @@
+// ==UserScript==
+// @name         猜盐多板块每日谜题日期选择器
+// @namespace    http://tampermonkey.net/
+// @version      0.4
+// @description  厌烦了每天只能重复玩一个答案，故写出用于更换答案，目前只支持猜病，猜萌，猜原
+// @match        https://xiaoce.fun/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // 获取当前板块类型
+    const path = location.pathname;
+    const typeMap = {
+        '/genshin': 'genshin',
+        '/guesscute': 'guess_cute',
+        '/guessdisease': 'guess_disease',
+        // 可以继续添加其它板块路径与 type 的映射
+    };
+    const currentType = typeMap[path];
+    if (!currentType) return;
+
+    const STORAGE_KEY = `xiaoce-daily-${currentType}-date`;
+
+    // 拦截 fetch 请求，动态修改 date 参数
+    const interceptFetch = (targetDate) => {
+    const rawFetch = window.fetch;
+    window.fetch = async function (...args) {
+        let [url, config] = args;
+
+        if (typeof url === 'string') {
+            // 原神 GET 请求
+            if (currentType === 'genshin' && url.includes(`/getStatus?type=${currentType}&date=`)) {
+                url = url.replace(/date=\d+/, `date=${targetDate}`);
+                return rawFetch.call(this, url, config);
+            }
+
+            // 猜病/猜萌 POST 请求
+            const isCute = currentType === 'guess_cute' && url.includes('/guessCute/guess');
+            const isDisease = currentType === 'guess_disease' && url.includes('/sendMessage');
+
+            if ((isCute || isDisease) && config?.body) {
+                let bodyStr;
+
+                if (typeof config.body === 'string') {
+                    bodyStr = config.body;
+                } else if (config.body instanceof URLSearchParams) {
+                    bodyStr = config.body.toString();
+                } else {
+                    // 尝试兜底处理
+                    try {
+                        bodyStr = await new Response(config.body).text();
+                    } catch {
+                        bodyStr = '';
+                    }
+                }
+
+                const newBody = bodyStr.replace(/date=\d+/, `date=${targetDate}`);
+                const newConfig = Object.assign({}, config, {
+                    body: newBody,
+                    headers: Object.assign({}, config.headers, {
+                        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+                    })
+                });
+                return rawFetch.call(this, url, newConfig);
+            }
+        }
+
+        return rawFetch.apply(this, args);
+    };
+};
+
+    // 设置当前日期并刷新
+    const setDate = (date) => {
+        localStorage.setItem(STORAGE_KEY, date);
+        location.reload();
+    };
+
+    // 获取所有可用的历史日期
+    const fetchAvailableDates = async () => {
+        const url = `https://xiaoce.fun/api/v0/quiz/daily/general/fetchActive?type=${currentType}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        return json.data || [];
+    };
+
+    // 注入选择器 UI
+    const injectUI = (dates, currentDate) => {
+        const panel = document.createElement('div');
+        panel.style.position = 'fixed';
+        panel.style.top = '10px';
+        panel.style.left = '10px';
+        panel.style.zIndex = '9999';
+        panel.style.background = 'white';
+        panel.style.border = '1px solid #aaa';
+        panel.style.padding = '6px';
+        panel.style.borderRadius = '6px';
+
+        const select = document.createElement('select');
+        for (const date of dates) {
+            const option = document.createElement('option');
+            option.value = date;
+            option.textContent = date;
+            if (date === currentDate) option.selected = true;
+            select.appendChild(option);
+        }
+        select.onchange = () => setDate(select.value);
+
+        const randomBtn = document.createElement('button');
+        randomBtn.textContent = '🎲随机';
+        randomBtn.style.marginLeft = '5px';
+        randomBtn.onclick = () => {
+            const random = dates[Math.floor(Math.random() * dates.length)];
+            setDate(random);
+        };
+
+        panel.appendChild(select);
+        panel.appendChild(randomBtn);
+        document.body.appendChild(panel);
+    };
+
+    // 主执行逻辑
+    (async () => {
+        const availableDates = await fetchAvailableDates();
+        const savedDate = localStorage.getItem(STORAGE_KEY) || availableDates.at(-1);
+        interceptFetch(savedDate);
+        injectUI(availableDates, savedDate);
+    })();
+})();
