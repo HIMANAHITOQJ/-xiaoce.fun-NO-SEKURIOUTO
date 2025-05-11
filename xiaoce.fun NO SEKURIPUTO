@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         猜盐多板块每日谜题日期选择器
+// @name         猜盐每日谜题日期选择器
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      1.0
 // @description  厌烦了每天只能重复玩一个答案，故写出用于更换答案，目前只支持猜病，猜萌，猜原
 // @match        https://xiaoce.fun/*
 // @grant        none
