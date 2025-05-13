@@ -1,92 +1,94 @@
 // ==UserScript==
-// @name         猜盐每日谜题日期选择器
+// @name         猜盐多板块每日谜题日期选择器
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  厌烦了每天只能重复玩一个答案，故写出用于更换答案，目前只支持猜病，猜萌，猜原
+// @version      1.1
+// @license MIT
+// @description  支持猜原、猜萌、猜病板块的每日谜题自由切换与随机
 // @match        https://xiaoce.fun/*
 // @grant        none
+// @run-at       document-start
+// @downloadURL https://update.greasyfork.org/scripts/535633/%E7%8C%9C%E7%9B%90%E5%A4%9A%E6%9D%BF%E5%9D%97%E6%AF%8F%E6%97%A5%E8%B0%9C%E9%A2%98%E6%97%A5%E6%9C%9F%E9%80%89%E6%8B%A9%E5%99%A8.user.js
+// @updateURL https://update.greasyfork.org/scripts/535633/%E7%8C%9C%E7%9B%90%E5%A4%9A%E6%9D%BF%E5%9D%97%E6%AF%8F%E6%97%A5%E8%B0%9C%E9%A2%98%E6%97%A5%E6%9C%9F%E9%80%89%E6%8B%A9%E5%99%A8.meta.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // 获取当前板块类型
-    const path = location.pathname;
-    const typeMap = {
-        '/genshin': 'genshin',
-        '/guesscute': 'guess_cute',
-        '/guessdisease': 'guess_disease',
-        // 可以继续添加其它板块路径与 type 的映射
-    };
-    const currentType = typeMap[path];
+    // 识别当前板块
+    const pathname = location.pathname;
+    let currentType = null;
+    if (pathname.startsWith('/genshin')) currentType = 'genshin';
+    else if (pathname.startsWith('/guesscute')) currentType = 'guess_cute';
+    else if (pathname.startsWith('/guessdisease')) currentType = 'guess_disease';
     if (!currentType) return;
 
-    const STORAGE_KEY = `xiaoce-daily-${currentType}-date`;
+    const STORAGE_KEY = `xiaoce-date-${currentType}`;
+    let selectedDate = localStorage.getItem(STORAGE_KEY) || null;
 
-    // 拦截 fetch 请求，动态修改 date 参数
-    const interceptFetch = (targetDate) => {
+    // 拦截 fetch，注入 date 参数
     const rawFetch = window.fetch;
-    window.fetch = async function (...args) {
-        let [url, config] = args;
+    window.fetch = async function (input, init) {
+        const url = typeof input === 'string' ? input : input.url;
 
-        if (typeof url === 'string') {
-            // 原神 GET 请求
-            if (currentType === 'genshin' && url.includes(`/getStatus?type=${currentType}&date=`)) {
-                url = url.replace(/date=\d+/, `date=${targetDate}`);
-                return rawFetch.call(this, url, config);
+        if (currentType === 'genshin' && url.includes('/api/v0/quiz/daily/genshin/get')) {
+            if (selectedDate) {
+                const u = new URL(url, location.origin);
+                u.searchParams.set('date', selectedDate);
+                const newInput = typeof input === 'string' ? u.href : new Request(u.href, input);
+                const newInit = Object.assign({}, init, {
+                    headers: Object.assign({}, init?.headers, { 'fun-device': 'web' }),
+                });
+                return rawFetch.call(this, newInput, newInit);
             }
+        }
 
-            // 猜病/猜萌 POST 请求
-            const isCute = currentType === 'guess_cute' && url.includes('/guessCute/guess');
-            const isDisease = currentType === 'guess_disease' && url.includes('/sendMessage');
-
-            if ((isCute || isDisease) && config?.body) {
+        if ((currentType === 'guess_cute' && url.includes('/guessCute/guess')) ||
+            (currentType === 'guess_disease' && url.includes('/sendMessage'))) {
+            if (init?.body) {
                 let bodyStr;
-
-                if (typeof config.body === 'string') {
-                    bodyStr = config.body;
-                } else if (config.body instanceof URLSearchParams) {
-                    bodyStr = config.body.toString();
+                if (typeof init.body === 'string') {
+                    bodyStr = init.body;
                 } else {
-                    // 尝试兜底处理
                     try {
-                        bodyStr = await new Response(config.body).text();
+                        bodyStr = await new Response(init.body).text();
                     } catch {
                         bodyStr = '';
                     }
                 }
-
-                const newBody = bodyStr.replace(/date=\d+/, `date=${targetDate}`);
-                const newConfig = Object.assign({}, config, {
+                const newBody = bodyStr.replace(/date=\d+/, `date=${selectedDate}`);
+                const newInit = Object.assign({}, init, {
                     body: newBody,
-                    headers: Object.assign({}, config.headers, {
+                    headers: Object.assign({}, init.headers, {
                         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
                     })
                 });
-                return rawFetch.call(this, url, newConfig);
+                return rawFetch.call(this, input, newInit);
             }
         }
 
-        return rawFetch.apply(this, args);
-    };
-};
-
-    // 设置当前日期并刷新
-    const setDate = (date) => {
-        localStorage.setItem(STORAGE_KEY, date);
-        location.reload();
+        return rawFetch.apply(this, arguments);
     };
 
-    // 获取所有可用的历史日期
+    // 获取可用日期
     const fetchAvailableDates = async () => {
         const url = `https://xiaoce.fun/api/v0/quiz/daily/general/fetchActive?type=${currentType}`;
-        const res = await fetch(url);
-        const json = await res.json();
-        return json.data || [];
+        try {
+            const res = await fetch(url, {
+                headers: { 'fun-device': 'web' },
+                credentials: 'include'
+            });
+            const json = await res.json();
+            if (json.success && Array.isArray(json.data)) {
+                return json.data.sort().reverse();
+            }
+        } catch (e) {
+            console.error('[脚本] 获取日期失败', e);
+        }
+        return [];
     };
 
-    // 注入选择器 UI
-    const injectUI = (dates, currentDate) => {
+    // 注入 UI
+    const injectUI = (dates) => {
         const panel = document.createElement('div');
         panel.style.position = 'fixed';
         panel.style.top = '10px';
@@ -96,23 +98,29 @@
         panel.style.border = '1px solid #aaa';
         panel.style.padding = '6px';
         panel.style.borderRadius = '6px';
+        panel.style.boxShadow = '0 2px 6px rgba(0,0,0,0.2)';
+        panel.style.fontSize = '14px';
 
         const select = document.createElement('select');
         for (const date of dates) {
             const option = document.createElement('option');
             option.value = date;
-            option.textContent = date;
-            if (date === currentDate) option.selected = true;
+            option.textContent = `${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6)}`;
+            if (date === selectedDate) option.selected = true;
             select.appendChild(option);
         }
-        select.onchange = () => setDate(select.value);
+        select.onchange = () => {
+            localStorage.setItem(STORAGE_KEY, select.value);
+            location.reload();
+        };
 
         const randomBtn = document.createElement('button');
         randomBtn.textContent = '🎲随机';
-        randomBtn.style.marginLeft = '5px';
+        randomBtn.style.marginLeft = '6px';
         randomBtn.onclick = () => {
             const random = dates[Math.floor(Math.random() * dates.length)];
-            setDate(random);
+            localStorage.setItem(STORAGE_KEY, random);
+            location.reload();
         };
 
         panel.appendChild(select);
@@ -120,11 +128,16 @@
         document.body.appendChild(panel);
     };
 
-    // 主执行逻辑
-    (async () => {
-        const availableDates = await fetchAvailableDates();
-        const savedDate = localStorage.getItem(STORAGE_KEY) || availableDates.at(-1);
-        interceptFetch(savedDate);
-        injectUI(availableDates, savedDate);
-    })();
+    // 初始化流程
+    window.addEventListener('load', async () => {
+        const dates = await fetchAvailableDates();
+        if (dates.length === 0) return;
+
+        if (!selectedDate) {
+            selectedDate = dates[0];
+            localStorage.setItem(STORAGE_KEY, selectedDate);
+        }
+
+        injectUI(dates);
+    });
 })();
